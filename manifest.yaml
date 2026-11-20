@@ -15,7 +15,7 @@ app_author_name: "London_gems"
 app:
   id: hack.app_b0e7
   name: London Right Now
-  version: 0.1.0
+  version: 0.1.1
   # Never use the word "by" here: the badge is parsed from
   # "[via <name> <version> by <author name>]".
   summary: >-
