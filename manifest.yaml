@@ -26,7 +26,11 @@ app:
     regular places: exploring favours independent places over chains and
     minds a longer walk less, while regulars puts the places you name first.
     When it does not know what you like, or you name a day without a time, it
-    asks before it picks. It keeps the walk short, never sends you somewhere
+    asks before it picks. For advice that fits your habits it relies on what
+    Pippa knows about you: Pippa passes in your usual places, the kinds of
+    place you like and whether you tend to explore, so the more you tell
+    Pippa, the more personal the picks become. The app itself keeps nothing
+    between questions. It keeps the walk short, never sends you somewhere
     that shuts before you are done, and weighs how busy each place is likely
     to be at the time you get there, where that data is available. Alongside
     its pick it offers alternatives that are closer, quieter, cheaper, better
