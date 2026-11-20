@@ -137,11 +137,18 @@ class Web:
         return [source for source, _, _ in self.calls]
 
 
-def run(inputs: dict, web: Web | None = None, *, explicit: bool = False) -> Result:
+def ask(inputs: dict, web: Web | None = None, *, explicit: bool = False) -> Result:
+    """Call the app with exactly these inputs."""
     app = App()
     app._fetch = web if web is not None else Web()
     return LocalRunner(app).call(OUTCOME, inputs, granted_secrets={}, now=NOW,
                                  request_id="test-1", explicit=explicit).result
+
+
+def run(inputs: dict, web: Web | None = None, *, explicit: bool = False) -> Result:
+    """As if the person also said they do not mind what kind of place, unless the
+    test says. With nothing at all about what they like, the app asks instead."""
+    return ask({"category": "any", **inputs}, web, explicit=explicit)
 
 
 @pytest.fixture(autouse=True)
@@ -232,11 +239,17 @@ def test_backups_each_have_their_own_angle():
 
 @pytest.mark.parametrize("location", ["", "near me", "London"])
 def test_no_place_asks_where(location):
-    """Acceptance 7: with nowhere to start from, it asks instead of guessing."""
+    """Acceptance 7: with nowhere to start from, it asks instead of guessing,
+    and asks the mood question in the same breath."""
     web = Web()
-    result = run({"location": location} if location else {}, web)
+    inputs = {"category": "museum", "mood": ""}
+    if location:
+        inputs["location"] = location
+    result = ask(inputs, web)
     assert result.data["status"] == "needs_input"
-    assert result.data["needs"] == ["location"]
+    assert result.data["needs"] == ["location", "mood"]
+    assert result.data["questions"][0] == (
+        "Where in London will you be: an area, a station or a postcode?")
     assert "pick_name" not in result.data
     assert web.calls == []
 
@@ -253,6 +266,107 @@ def test_turned_down_places_are_never_offered():
 
 def test_the_same_question_gets_the_same_answer():
     assert run({"location": HERE}).data == run({"location": HERE}).data
+
+
+# ── Asking about what the person likes ──────────────────────────────────────
+
+
+def test_knowing_nothing_it_asks_everything_at_once():
+    web = Web()
+    result = ask({}, web)
+    data = result.data
+    assert data["status"] == "needs_input"
+    assert data["needs"] == ["location", "activity", "mood"]
+    assert len(data["questions"]) == 3
+    assert data["questions"][2].startswith("Are you in the mood to explore somewhere new")
+    assert result.narrative.startswith("Before I pick somewhere: Where in London")
+    assert (data["assumptions"], data["preferences"], data["backups"]) == ([], [], [])
+    assert web.calls == []
+
+
+def test_a_day_without_a_time_asks_when():
+    """"Sunday for 60 minutes near Bloomsbury": which part of Sunday?"""
+    web = Web()
+    data = ask({"location": HERE, "day": "Sunday", "duration_min": 60}, web).data
+    assert data["needs"] == ["start_time", "activity", "mood"]
+    assert data["questions"][0] == "What time on Sunday does your free time start?"
+    assert web.calls == []
+
+
+def test_a_day_with_a_time_does_not_ask():
+    data = ask({"location": HERE, "category": "museum", "day": "Sunday",
+                "start": "2026-11-22T14:00:00+00:00", "duration_min": 60}).data
+    assert data["status"] == "ok"
+    assert "free time: Sunday 14:00 to 15:00" in data["preferences"]
+
+
+def test_saying_what_they_like_is_enough_to_answer():
+    """A kind of place, a food or a feel: any one of them, and no question."""
+    for said in ({"category": "cafe"}, {"cuisine": "ramen"}, {"vibe": ["quiet"]},
+                 {"regulars": ["Corner Cafe"]}):
+        data = ask({"location": HERE, **said}).data
+        assert data["status"] == "ok", said
+        assert data["needs"] == [] and data["questions"] == []
+
+
+def test_answering_the_questions_gives_a_pick():
+    """The follow-up: everything from the first message, plus the answers."""
+    data = ask({"location": HERE, "day": "Sunday", "start": "2026-11-22T14:00:00+00:00",
+                "duration_min": 60, "category": "museum", "mood": "explore"}).data
+    assert data["status"] == "ok"
+    assert data["preferences"] == ["kind of place: museum", "mood: explore",
+                                   "free time: Sunday 14:00 to 15:00"]
+    assert "somewhere different: not a known chain or one of your regulars" in data["pick_reasons"]
+
+
+def test_in_the_mood_for_a_regular_without_naming_one_it_asks_which():
+    data = ask({"mood": "familiar"}).data
+    assert data["needs"] == ["location", "activity", "regulars"]
+    assert data["questions"][-1] == "Which places do you usually go to?"
+
+
+def test_a_regular_comes_first_when_that_is_the_mood():
+    data = run({"location": HERE, "category": "cafe", "mood": "my usual",
+                "regulars": ["Night Owl"]}).data
+    assert data["pick_name"] == "Night Owl Cafe"
+    assert "one of your regulars" in data["pick_reasons"]
+    assert data["preferences"] == ["kind of place: cafe", "mood: familiar",
+                                   "regular places: Night Owl"]
+
+
+def test_exploring_passes_over_a_regular():
+    usual = run({"location": HERE, "category": "cafe", "regulars": ["Corner Cafe"]}).data
+    assert usual["pick_name"] == "Corner Cafe"
+    new = run({"location": HERE, "category": "cafe", "mood": "somewhere new",
+               "regulars": ["Corner Cafe"]}).data
+    assert new["pick_name"] == "Night Owl Cafe"
+
+
+def test_familiar_with_no_regulars_favours_a_chain():
+    seed = [dict(e, tags={**e["tags"], "brand": "Night Owl Coffee"}) if e["id"] == 4 else e
+            for e in SEED]
+    data = run({"location": HERE, "category": "cafe", "mood": "familiar"},
+               Web(overpass=as_json({"elements": seed}))).data
+    assert data["pick_name"] == "Night Owl Cafe"
+    assert "a chain you will know" in data["pick_reasons"]
+    assert "regulars: none named, so well-known chains were favoured" in data["assumptions"]
+
+
+def test_a_regular_that_is_not_open_is_reported():
+    data = run({"location": HERE, "category": "cafe", "regulars": ["Prufrock"]}).data
+    assert data["status"] == "ok"
+    assert ("regulars: none of them is open for the whole window within 18 min walk"
+            in data["assumptions"])
+
+
+def test_a_mood_it_cannot_read_is_treated_as_either():
+    data = run({"location": HERE, "mood": "sleepy"}).data
+    assert data["status"] == "ok"
+    assert "mood 'sleepy' not understood, so treated as either" in data["assumptions"]
+
+
+def test_now_is_not_a_day_that_needs_a_time():
+    assert ask({"location": HERE, "category": "cafe", "day": "now"}).data["status"] == "ok"
 
 
 # ── Busyness ────────────────────────────────────────────────────────────────
@@ -459,4 +573,4 @@ def test_google_failing_falls_back_to_openstreetmap(monkeypatch):
 def test_picked_by_name_it_answers_and_asks_as_usual():
     """`@London Right Now ...`: the same answer, and the same question when there is no place."""
     assert run({"location": HERE}, explicit=True).data == run({"location": HERE}).data
-    assert run({}, explicit=True).data["status"] == "needs_input"
+    assert ask({}, explicit=True).data["needs"] == ask({}).data["needs"]

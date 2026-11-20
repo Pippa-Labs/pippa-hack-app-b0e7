@@ -191,6 +191,8 @@ def parse_overpass(raw: bytes) -> tuple[list[Venue], int]:
             maps_url=maps_url(float(lat), float(lng)), address=address,
             cuisines=cuisines, has=has, lacks=lacks,
             tip=description[:200] or None,
+            # OpenStreetMap tags chain branches with their brand.
+            chain=bool(tags.get("brand") or tags.get("brand:wikidata")),
         ))
     return venues, unreadable
 

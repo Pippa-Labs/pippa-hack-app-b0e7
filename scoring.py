@@ -25,11 +25,31 @@ from hours import LONDON, WeeklyHours
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
-#: How much each part of the score counts. The brief's fifth weight, novelty
-#: (0.15), needs a memory of where this person has been, and a Pippa app has
-#: no memory and is never told who is asking. So it is left out, and the four
-#: below are divided by their total, which keeps the score between 0 and 1.
+#: How much each part of the score counts. They are divided by their total,
+#: which keeps the score between 0 and 1. The app has no memory of where the
+#: person has been, so novelty is not a weight of its own: it is part of
+#: `preference`, worked out from the mood they state and the regulars they
+#: name (see FAMILIARITY).
 WEIGHTS = {"preference": 0.35, "timing": 0.20, "proximity": 0.20, "quality": 0.10}
+
+#: Moods. "explore" wants somewhere different, "familiar" one of their usual
+#: places, "either" means they do not mind.
+MOODS = ("explore", "familiar", "either")
+#: How a venue fits the mood: one of the person's regulars, a known chain
+#: (OpenStreetMap's brand tag), or anything else.
+FAMILIARITY = {
+    "explore": {"regular": 0.0, "chain": 0.2, "other": 1.0},
+    "familiar": {"regular": 1.0, "chain": 0.6, "other": 0.3},
+    "either": {"regular": 0.8, "chain": 0.5, "other": 0.5},
+}
+FAMILIARITY_REASONS = {
+    ("explore", "other"): "somewhere different: not a known chain or one of your regulars",
+    ("familiar", "regular"): "one of your regulars",
+    ("familiar", "chain"): "a chain you will know",
+    ("either", "regular"): "one of your regulars",
+}
+#: Exploring, a longer walk matters less.
+EXPLORE_PROXIMITY_WEIGHT = 0.10
 
 #: When it is raining around the time of arrival, a short walk counts for more.
 RAIN_PROXIMITY_BONUS = 0.10
@@ -124,6 +144,7 @@ class Venue:
     has: frozenset[str] = frozenset()      # features the source says it has
     lacks: frozenset[str] = frozenset()    # features the source says it lacks
     tip: str | None = None
+    chain: bool = False                    # a branch of a known brand
 
 
 @dataclass(frozen=True)
@@ -149,6 +170,8 @@ class Request:
     budget: int | None = None
     exclude: tuple[str, ...] = ()
     raining: bool = False
+    mood: str = "either"                   # one of MOODS
+    regulars: tuple[str, ...] = ()         # places the person says they go to
 
     @property
     def duration_min(self) -> int:
@@ -216,6 +239,23 @@ def cuisine_terms(cuisine: str) -> tuple[str, ...]:
 
 def same_name(a: str, b: str) -> bool:
     return _normalise(a) == _normalise(b)
+
+
+def is_regular(name: str, regulars) -> bool:
+    """Whether a venue is one the person named: "Prufrock" matches "Prufrock Coffee"."""
+    venue = f" {_normalise(name)} "
+    for regular in regulars:
+        wanted = _normalise(regular)
+        if wanted and (venue.strip() == wanted or (len(wanted) >= 4 and f" {wanted} " in venue)):
+            return True
+    return False
+
+
+def familiarity(venue: Venue, regulars) -> str:
+    """regular, chain or other."""
+    if is_regular(venue.name, regulars):
+        return "regular"
+    return "chain" if venue.chain else "other"
 
 
 def _normalise(name: str) -> str:
@@ -299,6 +339,11 @@ def _score(request: Request, c: Candidate, wanted: list[str]) -> Candidate:
         else:
             parts.append(max(0.0, 1 - 0.5 * (venue.price_level - request.budget)))
             reasons.append("above budget")
+    if request.mood != "either" or request.regulars:
+        kind = familiarity(venue, request.regulars)
+        parts.append(FAMILIARITY[request.mood][kind])
+        if (request.mood, kind) in FAMILIARITY_REASONS:
+            reasons.append(FAMILIARITY_REASONS[(request.mood, kind)])
     preference = sum(parts) / len(parts) if parts else 0.5
     if matched:
         reasons.insert(0, "matches: " + ", ".join(matched))
@@ -329,6 +374,8 @@ def _score(request: Request, c: Candidate, wanted: list[str]) -> Candidate:
         quality = 0.5
 
     weights = dict(WEIGHTS)
+    if request.mood == "explore":
+        weights["proximity"] = EXPLORE_PROXIMITY_WEIGHT
     if request.raining:
         weights["proximity"] += RAIN_PROXIMITY_BONUS
         reasons.append("raining around then, so a short walk counts for more")

@@ -181,6 +181,54 @@ def test_unknown_busyness_is_never_claimed():
     assert not any("quiet" in r or "busy" in r for r in top.reasons)
 
 
+# ── Mood: somewhere new, or a regular ───────────────────────────────────────
+
+
+def test_exploring_prefers_an_independent_to_a_chain():
+    chain = venue("a", "Big Brand Coffee", dlat=0.001, chain=True)
+    indie = venue("b", "Little Cafe", dlat=0.003)
+    assert names(ranked(request(), [chain, indie]))[0] == "Big Brand Coffee"
+    top = ranked(request(mood="explore"), [chain, indie])[0]
+    assert top.venue.name == "Little Cafe"
+    assert "somewhere different: not a known chain or one of your regulars" in top.reasons
+
+
+def test_exploring_skips_a_regular():
+    regular = venue("a", "Prufrock Coffee", dlat=0.001)
+    other = venue("b", "Other Cafe", dlat=0.004)
+    assert names(ranked(request(mood="explore", regulars=("Prufrock",)), [regular, other]))[0] == "Other Cafe"
+
+
+def test_familiar_puts_a_regular_first():
+    near = venue("a", "Near Cafe", dlat=0.001)
+    usual = venue("b", "Prufrock Coffee", dlat=0.005)
+    top = ranked(request(mood="familiar", regulars=("prufrock",)), [near, usual])[0]
+    assert top.venue.name == "Prufrock Coffee"
+    assert "one of your regulars" in top.reasons
+
+
+def test_exploring_minds_the_walk_less():
+    near, far = venue("a", "Near", dlat=0.0005), venue("b", "Far", dlat=0.005)
+
+    def gap(mood: str) -> float:
+        by_name = {c.venue.name: c.score for c in ranked(request(mood=mood), [near, far])}
+        return by_name["Near"] - by_name["Far"]
+
+    assert 0 < gap("explore") < gap("either")
+
+
+def test_no_mood_and_no_regulars_leaves_the_score_alone():
+    plain = ranked(request(), [venue("a", "Cafe")])[0]
+    assert not any("regular" in r or "chain" in r for r in plain.reasons)
+
+
+def test_a_regular_is_matched_on_whole_words():
+    assert scoring.is_regular("Prufrock Coffee", ["Prufrock"])
+    assert scoring.is_regular("The Corner Cafe", ["corner cafe"])
+    assert not scoring.is_regular("Ruffles", ["Prufrock"])
+    assert not scoring.is_regular("Cafe", ["caf"])
+
+
 # ── Reading the request ─────────────────────────────────────────────────────
 
 

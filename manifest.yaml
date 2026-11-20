@@ -15,19 +15,24 @@ app_author_name: "London_gems"
 app:
   id: hack.app_b0e7
   name: London Right Now
-  version: 0.1.1
+  version: 0.2.0
   # Never use the word "by" here: the badge is parsed from
   # "[via <name> <version> by <author name>]".
   summary: >-
     Finds the best London cafe, museum, gallery, bookshop or restaurant open
     near you for the time you have free. It matches what you are in the mood
-    for (a cuisine, a feel such as quiet or laptop-friendly, a budget), keeps
-    the walk short, never sends you somewhere that shuts before you are done,
-    and weighs how busy each place is likely to be at the time you get there,
-    where that data is available. Alongside its pick it offers alternatives
-    that are closer, quieter, cheaper, better rated or open later. It sends the
-    place you name to OpenStreetMap, postcodes.io and Open-Meteo, and the
-    venues it considers to Google Places and BestTime when those are set up.
+    for (a cuisine, a feel such as quiet or laptop-friendly, a budget), and
+    whether you want to explore somewhere new or go back to one of your
+    regular places: exploring favours independent places over chains and
+    minds a longer walk less, while regulars puts the places you name first.
+    When it does not know what you like, or you name a day without a time, it
+    asks before it picks. It keeps the walk short, never sends you somewhere
+    that shuts before you are done, and weighs how busy each place is likely
+    to be at the time you get there, where that data is available. Alongside
+    its pick it offers alternatives that are closer, quieter, cheaper, better
+    rated or open later. It sends the place you name to OpenStreetMap,
+    postcodes.io and Open-Meteo, and the venues it considers to Google Places
+    and BestTime when those are set up.
 
 agent_types:
   - personal
@@ -47,6 +52,7 @@ outcomes:
       - where to go with an hour free in london
       - quiet cafe with wifi near
       - somewhere not too busy near
+      - somewhere new to explore near
     inputs:
       - name: location
         type: string
@@ -63,8 +69,10 @@ outcomes:
         description: >-
           The kind of place, as exactly one of: cafe, museum, gallery,
           bookshop, restaurant. Coffee or tea means cafe; lunch, dinner or a
-          named cuisine means restaurant; art means gallery. If the message
-          does not say what kind of place, return "any".
+          named cuisine means restaurant; art means gallery. Use what they
+          said in this message or earlier in this conversation. Return "any"
+          only if they said they do not mind or want anything. If they never
+          said what kind of place, return an empty string rather than guessing.
       - name: cuisine
         type: string
         required: false
@@ -79,12 +87,39 @@ outcomes:
           Short words for the kind of place they want, such as "quiet",
           "laptop-friendly", "outdoor seating", "vegan" or "wheelchair
           accessible". Leave this out if they asked for nothing like that.
+      - name: mood
+        type: string
+        required: false
+        description: >-
+          Whether they want somewhere new or somewhere they know, from this
+          message or earlier in this conversation, as exactly one of:
+          "explore" (somewhere new or different), "familiar" (one of their
+          usual or favourite places), "either" (they said they do not mind).
+          Return an empty string if they have not said.
+      - name: regulars
+        type: array
+        item_type: string
+        required: false
+        description: >-
+          Names of places the person has said they go to often or like, in
+          this conversation or that you already know they like. Leave this
+          out if you know of none; never make names up.
+      - name: day
+        type: string
+        required: false
+        description: >-
+          The day they named for their free time, such as "Sunday" or
+          "Saturday", ONLY when they gave no clock time for it ("Sunday for
+          an hour"). Return an empty string if they gave a time (put it in
+          start instead) or named no day.
       - name: start
         type: datetime
         required: false
         description: >-
-          When the free time starts, with a UTC offset, in London time. Leave
-          this out entirely if they mean now.
+          When the free time starts, with a UTC offset, in London time, only
+          if they gave a clock time ("at 2pm", "Sunday at 11"). Leave this
+          out entirely if they mean now or named a day with no time; never
+          guess a time.
       - name: end
         type: datetime
         required: false
@@ -119,7 +154,20 @@ outcomes:
       - name: needs
         type: array
         item_type: string
-        description: The inputs still needed before the app can answer, such as "location"
+        description: >-
+          What is still needed before the app can answer: any of location,
+          start_time, activity, mood, regulars
+      - name: questions
+        type: array
+        item_type: string
+        description: When status is needs_input, one question for each entry in needs, to ask in one go
+      - name: preferences
+        type: array
+        item_type: string
+        description: >-
+          The preferences the person stated that this answer used, one short
+          fact each ("kind of place: museum", "mood: explore", "regular
+          places: Prufrock"), worth keeping for next time
       - name: assumptions
         type: array
         item_type: string

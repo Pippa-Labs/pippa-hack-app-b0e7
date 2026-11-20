@@ -7,6 +7,10 @@ writes the sentence; the app only supplies facts.
 
 How one call goes:
 
+0. If the question leaves out where, what kind of place (or anything they
+   like), or names a day with no time, return status "needs_input" with every
+   missing thing in `needs` and `questions`, and the mood question with them.
+   Pippa asks; the answer comes back as the next call.
 1. Read the inputs and settle the window (start, end, or a default length).
 2. Turn the place into coordinates (postcodes.io, or Nominatim).
 3. In parallel: the venues within walking reach (Google Places when its key
@@ -17,7 +21,9 @@ How one call goes:
 5. The best is the pick; `scoring.backups` finds the alternatives.
 
 The app keeps nothing between calls and is not told who is asking, so it has
-no memory of anyone. If one source fails, the answer still comes back, with
+no memory of anyone. What the person likes reaches it only as inputs (mood,
+regulars, category and so on), and it hands back what it used in
+`preferences`, for Pippa to keep if she can. If one source fails, the answer still comes back, with
 the gap written into `assumptions`. Busyness is never guessed: with no data
 it is "unknown".
 """
@@ -80,6 +86,30 @@ VAGUE_LOCATIONS = {"me", "here", "near me", "nearby", "around here", "my locatio
                    "where i am", "london", "in london"}
 #: Names Nominatim does not resolve to one point, given one.
 LOCATION_ALIASES = {"central london": (51.5080, -0.1281, "Trafalgar Square")}
+
+#: How the person might put their mood, and what it means to the score.
+MOOD_WORDS = {
+    "explore": "explore", "exploring": "explore", "new": "explore", "somewhere new": "explore",
+    "different": "explore", "something different": "explore", "adventurous": "explore",
+    "familiar": "familiar", "regular": "familiar", "regulars": "familiar", "usual": "familiar",
+    "my usual": "familiar", "favourite": "familiar", "favorite": "familiar",
+    "either": "either", "any": "either", "anything": "either", "don't mind": "either",
+    "dont mind": "either", "no preference": "either", "whatever": "either",
+}
+#: A day named with these words is not a day that needs a time.
+NOW_WORDS = {"now", "right now", "now-ish", "straight away"}
+
+#: What the app asks when something it needs was not said. Pippa words the
+#: question; these say what to ask, and are returned in `questions`.
+QUESTIONS = {
+    "location": "Where in London will you be: an area, a station or a postcode?",
+    "start_time": "What time on {day} does your free time start?",
+    "activity": ("What do you feel like: a cafe, a museum, a gallery, a bookshop "
+                 "or a restaurant, or anything at all?"),
+    "mood": ("Are you in the mood to explore somewhere new, or go back to one of "
+             "your regular places, or do you not mind?"),
+    "regulars": "Which places do you usually go to?",
+}
 
 
 class PlaceNotFound(AgentAppError):
@@ -178,27 +208,52 @@ class App:
         now = call.context.now.astimezone(LONDON)
         assumptions: list[str] = []
 
-        category = self._category(inputs.get("category"), assumptions)
-        start, end = self._window(inputs, now, category, assumptions)
-
         place = str(inputs.get("location") or "").strip()
+        said_category = str(inputs.get("category") or "").strip()
+        cuisine = str(inputs.get("cuisine") or "").strip()
+        vibes = _texts(inputs.get("vibe"))
+        regulars = _texts(inputs.get("regulars"))
+        mood, mood_said = self._mood(inputs.get("mood"), assumptions)
+        day = str(inputs.get("day") or "").strip()[:30]
+        start_said = _moment(inputs.get("start")) is not None
+
+        # Ask, rather than guess, when the question leaves out what matters.
+        # Everything missing is asked in one go, so it is one round trip.
+        needs: list[str] = []
         if not place or place.lower() in VAGUE_LOCATIONS:
+            needs.append("location")
+        if day and not start_said and day.lower() not in NOW_WORDS:
+            needs.append("start_time")
+        if not (said_category or cuisine or vibes or regulars):
+            needs.append("activity")
+        if needs and not mood_said:
+            needs.append("mood")
+        if needs and mood == "familiar" and not regulars:
+            needs.append("regulars")
+        if needs:
+            questions = [QUESTIONS[need].format(day=day) for need in needs]
             return Result(
-                data=_data("needs_input", assumptions, [], needs=["location"]),
-                narrative="I need to know where in London you are: an area, a station or a postcode.",
+                data=_data("needs_input", [], [], needs=needs, questions=questions),
+                narrative="Before I pick somewhere: " + " ".join(questions),
             )
+
+        category = self._category(said_category, assumptions)
+        start, end = self._window(inputs, now, category, assumptions)
         origin, label, used = self._locate(place, deadline, assumptions)
 
-        vibes = tuple(str(v).strip() for v in _as_list(inputs.get("vibe")) if str(v).strip())
         request = Request(
             category=category, origin=origin, start=start, end=end,
-            cuisine=str(inputs.get("cuisine") or "").strip(),
+            cuisine=cuisine,
             vibes=vibes,
             budget=self._budget(inputs.get("budget"), assumptions),
-            exclude=tuple(str(x).strip() for x in _as_list(inputs.get("exclude_venues")) if str(x).strip()),
+            exclude=_texts(inputs.get("exclude_venues")),
+            mood=mood, regulars=regulars,
         )
+        preferences = _preferences(request, mood_said, start_said)
         for vibe in scoring.wanted_features(vibes)[1]:
             assumptions.append(f"vibe '{vibe}': no data to match it on")
+        if mood == "familiar" and not regulars:
+            assumptions.append("regulars: none named, so well-known chains were favoured")
         assumptions.append(
             f"travel: walking time estimated from distance, at most {request.max_travel_min} min")
 
@@ -211,6 +266,8 @@ class App:
             raining = rain_job.result()
         assumptions += venue_notes
         used.append(venue_source)
+        if mood != "either" and venue_source != "OpenStreetMap":
+            assumptions.append("chains: only recognised in OpenStreetMap data, so none was marked")
         if raining is None:
             assumptions.append("weather: unavailable")
         else:
@@ -225,10 +282,14 @@ class App:
                 f"checked {len(venues)} places within a {request.max_travel_min} min walk; "
                 "none is open for the whole window")
             return Result(
-                data=_data("no_results", assumptions, used),
+                data=_data("no_results", assumptions, used, preferences=preferences),
                 narrative=(f"Nothing within a {request.max_travel_min}-minute walk of {label} "
                            "is open for the whole of that time."),
             )
+        if regulars and not any(scoring.is_regular(c.venue.name, regulars) for c in candidates):
+            assumptions.append(
+                "regulars: none of them is open for the whole window "
+                f"within {request.max_travel_min} min walk")
 
         ranked = scoring.rank(request, candidates)
         key = os.environ.get("BESTTIME_API_KEY", "")
@@ -245,7 +306,8 @@ class App:
         pick = ranked[0]
         alternatives = scoring.backups(ranked)
         return Result(
-            data=_data("ok", assumptions, used, pick=pick, backups=alternatives),
+            data=_data("ok", assumptions, used, pick=pick, backups=alternatives,
+                       preferences=preferences),
             narrative=(f"{pick.venue.name} ({pick.venue.category}) is a {pick.travel_min}-minute "
                        f"walk from {label} and {scoring.open_until_text(pick.arrival, pick.closes_at)}, "
                        f"leaving {pick.time_available_min} minutes there."),
@@ -260,6 +322,17 @@ class App:
             return CATEGORY_WORDS[text]
         assumptions.append(f"category '{value}' is not covered, so every kind of place was considered")
         return "any"
+
+    @staticmethod
+    def _mood(value, assumptions: list[str]) -> tuple[str, bool]:
+        """The mood, and whether the person said one at all."""
+        text = " ".join(str(value or "").lower().replace("’", "'").split())
+        if not text:
+            return "either", False
+        if text in MOOD_WORDS:
+            return MOOD_WORDS[text], True
+        assumptions.append(f"mood '{str(value)[:30]}' not understood, so treated as either")
+        return "either", True
 
     @staticmethod
     def _budget(value, assumptions: list[str]) -> int | None:
@@ -464,6 +537,31 @@ def _as_list(value) -> list:
     return [part for part in str(value).split(",")]
 
 
+def _texts(value) -> tuple[str, ...]:
+    """An array input as trimmed, non-empty strings."""
+    return tuple(str(v).strip() for v in _as_list(value) if str(v).strip())
+
+
+def _preferences(request: Request, mood_said: bool, start_said: bool) -> list[str]:
+    """What the person said they wanted, one fact each, for Pippa to keep if it can."""
+    out: list[str] = []
+    if request.category != "any":
+        out.append(f"kind of place: {request.category}")
+    if request.cuisine:
+        out.append(f"food or drink: {request.cuisine[:40]}")
+    if request.vibes:
+        out.append("feel: " + ", ".join(v[:30] for v in request.vibes[:5]))
+    if request.budget is not None:
+        out.append(f"budget: {request.budget} of 4")
+    if mood_said:
+        out.append(f"mood: {request.mood}")
+    if request.regulars:
+        out.append("regular places: " + ", ".join(r[:40] for r in request.regulars[:5]))
+    if start_said:
+        out.append(f"free time: {request.start:%A} {request.start:%H:%M} to {request.end:%H:%M}")
+    return out
+
+
 def _moment(value) -> datetime | None:
     """A datetime input, which may arrive parsed or as ISO text. Naive means London."""
     if value is None or value == "":
@@ -500,11 +598,13 @@ def _backup_line(angle: str, c: Candidate) -> str:
     return line + f", id {c.venue.venue_id}"
 
 
-def _data(status: str, assumptions: list[str], used: list[str], *, needs=(),
-          pick: Candidate | None = None, backups=()) -> dict:
+def _data(status: str, assumptions: list[str], used: list[str], *, needs=(), questions=(),
+          preferences=(), pick: Candidate | None = None, backups=()) -> dict:
     data = {
         "status": status,
         "needs": list(needs),
+        "questions": list(questions),
+        "preferences": list(preferences),
         "assumptions": list(assumptions),
         "sources": list(dict.fromkeys(used)),
         "backups": [_backup_line(angle, c) for angle, c in backups],
