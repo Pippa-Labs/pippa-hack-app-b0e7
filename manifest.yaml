@@ -20,9 +20,14 @@ app:
   # "[via <name> <version> by <author name>]".
   summary: >-
     Finds the best London cafe, museum, gallery, bookshop or restaurant open
-    near you for the time you have free. It sends the place you name to
-    OpenStreetMap, postcodes.io and Open-Meteo, and the venues it considers to
-    Google Places and BestTime when those are set up.
+    near you for the time you have free. It matches what you are in the mood
+    for (a cuisine, a feel such as quiet or laptop-friendly, a budget), keeps
+    the walk short, never sends you somewhere that shuts before you are done,
+    and weighs how busy each place is likely to be at the time you get there,
+    where that data is available. Alongside its pick it offers alternatives
+    that are closer, quieter, cheaper, better rated or open later. It sends the
+    place you name to OpenStreetMap, postcodes.io and Open-Meteo, and the
+    venues it considers to Google Places and BestTime when those are set up.
 
 agent_types:
   - personal
@@ -41,6 +46,7 @@ outcomes:
       - gallery open late near
       - where to go with an hour free in london
       - quiet cafe with wifi near
+      - somewhere not too busy near
     inputs:
       - name: location
         type: string
